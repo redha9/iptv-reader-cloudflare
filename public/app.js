@@ -11,7 +11,33 @@ let auth=null,data={live:[],movies:[],series:[]},cats={live:[],movies:[],series:
 let loading=false,cachePrefix="guest",registry=new Map(),currentSeries=null,opening=false,currentPlayer=null,inactivityTimer=null,lastActivity=Date.now(),mediaGateway="",lastServerTouch=0;
 const INACTIVITY_MS=20*60*1000;
 function playerIsActive(){return !!currentPlayer?.video && !currentPlayer.video.paused && !currentPlayer.video.ended}
-function touchActivity(){lastActivity=Date.now();try{sessionStorage.setItem("iptv_last_activity",String(lastActivity))}catch{};if(Date.now()-lastServerTouch>60000){lastServerTouch=Date.now();fetch("/api/session",{method:"PUT",cache:"no-store"}).then(r=>{if(r.status===401)disconnect(true)}).catch(()=>{})}scheduleInactivity()}
+
+function touchActivity() {
+  lastActivity = Date.now();
+
+  try {
+    sessionStorage.setItem("iptv_last_activity", String(lastActivity));
+  } catch {}
+
+  // Ne jamais renouveler une session avant l'authentification
+  if (auth && Date.now() - lastServerTouch > 60000) {
+    lastServerTouch = Date.now();
+
+    fetch("/api/session", {
+      method: "PUT",
+      credentials: "same-origin",
+      cache: "no-store"
+    })
+    .then(r => {
+      if (r.status === 401) {
+        disconnect(true);
+      }
+    })
+    .catch(() => {});
+  }
+
+  scheduleInactivity();
+}
 function scheduleInactivity(){clearTimeout(inactivityTimer);if(!auth)return;const elapsed=Date.now()-lastActivity;if(elapsed>=INACTIVITY_MS && !playerIsActive()){disconnect(true);return}inactivityTimer=setTimeout(()=>{if(playerIsActive()){touchActivity();return}disconnect(true)},Math.max(1000,INACTIVITY_MS-elapsed))}
 function initInactivity(){const raw=Number(sessionStorage.getItem("iptv_last_activity")||Date.now());lastActivity=Number.isFinite(raw)?raw:Date.now();["click","pointerdown","keydown","touchstart","scroll"].forEach(ev=>window.addEventListener(ev,()=>touchActivity(),{passive:true}));scheduleInactivity()}
 const DB_NAME="iptv_reader_db",DB_VERSION=3,STORE="catalog";
@@ -63,7 +89,74 @@ async function fullLoad(){
 }
 async function loadCached(){const marker=await dbGet(key("auth_marker"));if(!marker||!auth||marker.host!==auth.host||marker.user!==auth.u)return false;const [l,m,s,cl,cm,cs]=await Promise.all([dbGet(key("data_live")),dbGet(key("data_movies")),dbGet(key("data_series")),dbGet(key("cats_live")),dbGet(key("cats_movies")),dbGet(key("cats_series"))]);if(!Array.isArray(l)||!Array.isArray(m)||!Array.isArray(s))return false;data={live:l,movies:m,series:s};cats={live:Array.isArray(cl)?cl:[],movies:Array.isArray(cm)?cm:[],series:Array.isArray(cs)?cs:[]};return true}
 
-async function connect(){const host=$("#host")?.value.trim().replace(/\/$/,""),u=$("#user")?.value.trim(),p=$("#pass")?.value.trim();if(!host||!u||!p){$("#connectBtn")?.insertAdjacentHTML("afterend",'<p class="error">Remplis les trois champs.</p>');return}const btn=$("#connectBtn");if(btn){btn.disabled=true;btn.textContent="Connexion…"}try{const login=await fetch("/api/session",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host,user:u,pass:p}),cache:"no-store"});const result=await login.json().catch(()=>({}));if(!login.ok)throw Error(result.error||"Connexion Xtream refusée.");auth={host:result.host||host,u:result.user||u};cachePrefix=makePrefix(auth);lastServerTouch=Date.now();await fullLoad();}catch(e){await fetch("/api/session",{method:"DELETE",cache:"no-store"}).catch(()=>{});auth=null;sessionStorage.removeItem("iptv_auth");localStorage.removeItem("iptv_auth");loading=false;showLogin(e.message||"Connexion impossible.")}}
+
+async function connect() {
+  const host = $("#host")?.value.trim().replace(/\/$/, "");
+  const u = $("#user")?.value.trim();
+  const p = $("#pass")?.value;
+
+  if (!host || !u || !p) {
+    $("#connectBtn")?.insertAdjacentHTML(
+      "afterend",
+      '<p class="error">Remplis les trois champs.</p>'
+    );
+    return;
+  }
+
+  const btn = $("#connectBtn");
+
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Connexion…";
+  }
+
+  try {
+    const login = await fetch("/api/session", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        host,
+        user: u,
+        pass: p
+      }),
+      cache: "no-store"
+    });
+
+    const result = await login.json().catch(() => ({}));
+
+    if (!login.ok) {
+      throw Error(result.error || "Connexion Xtream refusée.");
+    }
+
+    auth = {
+      host: result.host || host,
+      u: result.user || u
+    };
+
+    cachePrefix = makePrefix(auth);
+    lastServerTouch = Date.now();
+
+    await fullLoad();
+
+  } catch (e) {
+    await fetch("/api/session", {
+      method: "DELETE",
+      credentials: "same-origin",
+      cache: "no-store"
+    }).catch(() => {});
+
+    auth = null;
+    sessionStorage.removeItem("iptv_auth");
+    localStorage.removeItem("iptv_auth");
+
+    loading = false;
+    showLogin(e.message || "Connexion impossible.");
+  }
+}
+
 
 function filtered(type){const q=(searchInput?.value||"").trim().toLowerCase(),selected=state.category[type]||"all";return data[type].filter(x=>{const ok=selected==="all"||String(x.__category_id)===String(selected);const text=`${x.name||""} ${x.genre||""} ${x.plot||""} ${x.__category_name||""}`.toLowerCase();return ok&&(!q||text.includes(q))})}
 function categoryBar(type){const all=[{id:"all",name:"Tout"},...cats[type].slice(0,80)];return `<div class="category-bar">${all.map(c=>`<button class="chip ${(state.category[type]||"all")==String(c.id)?"active":""}" data-category="${escapeHtml(type)}" data-category-id="${escapeHtml(String(c.id))}">${escapeHtml(c.name)}</button>`).join("")}</div>`}
